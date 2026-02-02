@@ -24,8 +24,8 @@ const API_CONFIGS = [
 
 let CURRENT_API_BASE_URL = API_CONFIGS[0];
 
-const HrvScreen = () => {
-  const [hrvData, setHrvData] = useState([]);
+const HeartRateScreen = () => {
+  const [heartRateData, setHeartRateData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -71,8 +71,8 @@ const HrvScreen = () => {
     return false;
   };
 
-  // Send HRV data to backend API
-  const sendHrvDataToAPI = async (hrvIntervals) => {
+  // Send heart rate data to backend API
+  const sendHeartRateDataToAPI = async (heartRateIntervals) => {
     try {
       setIsSyncing(true);
       
@@ -83,30 +83,30 @@ const HrvScreen = () => {
         return;
       }
       
-      console.log(`📤 Sending HRV data to: ${CURRENT_API_BASE_URL}`);
+      console.log(`📤 Sending Heart Rate data to: ${CURRENT_API_BASE_URL}`);
       
-      const response = await fetch(`${CURRENT_API_BASE_URL}/hrv`, {
+      const response = await fetch(`${CURRENT_API_BASE_URL}/heartrate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         timeout: 10000,
         body: JSON.stringify({
-          hrvIntervals: hrvIntervals.map(interval => ({
+          heartRateIntervals: heartRateIntervals.map(interval => ({
             intervalStart: interval.start.toISOString(),
             intervalEnd: interval.end.toISOString(),
             timeLabel: interval.time,
-            hrvValue: interval.hrv
+            heartRateValue: interval.heartRate
           }))
         }),
       });
 
       const data = await response.json();
       if (data.success) {
-        console.log('✅ Successfully stored HRV data:', data.message);
+        console.log('✅ Successfully stored Heart Rate data:', data.message);
         setLastSyncTime(new Date());
       } else {
-        console.error('❌ Failed to store HRV data:', data.message);
+        console.error('❌ Failed to store Heart Rate data:', data.message);
       }
     } catch (error) {
       console.error('❌ API call failed:', error.message);
@@ -139,18 +139,14 @@ const HrvScreen = () => {
       const permissions = await requestPermission([
         {
           accessType: 'read',
-          recordType: 'HeartRateVariabilityRmssd',
-        },
-        {
-          accessType: 'read',
           recordType: 'HeartRate',
         },
       ]);
-      console.log('Health permissions result:', permissions);
+      console.log('Heart Rate Permissions result:', permissions);
       return permissions.every(permission => permission.status === 'granted');
     } catch (error) {
       console.error('Permission request failed:', error);
-      Alert.alert('Error', 'Failed to request health permissions. Please grant access to heart rate and HRV data.');
+      Alert.alert('Error', 'Failed to request Heart Rate permissions. Please grant access to heart rate data.');
       return false;
     }
   };
@@ -195,37 +191,42 @@ const HrvScreen = () => {
       });
     }
     
-    console.log(`📊 Generated ${intervals.length} HRV intervals (last: ${intervals[intervals.length-1]?.label})`);
+    console.log(`📊 Generated ${intervals.length} Heart Rate intervals (last: ${intervals[intervals.length-1]?.label})`);
     return intervals;
   };
 
-  // Aggregate HRV by 5-minute intervals
-  const aggregateHrvByInterval = (records, intervals, dataType) => {
+  // Aggregate Heart Rate by 5-minute intervals
+  const aggregateHeartRateByInterval = (records, intervals) => {
     const aggregatedData = [];
 
     for (const interval of intervals) {
-      const intervalRecords = records.filter(record => {
-        const recordTime = new Date(record.time);
-        return recordTime >= interval.start && recordTime < interval.end;
-      });
+      const intervalRecords = [];
+      
+      // Extract all samples that fall within this interval
+      for (const record of records) {
+        if (record.samples && Array.isArray(record.samples)) {
+          for (const sample of record.samples) {
+            const sampleTime = new Date(sample.time);
+            if (sampleTime >= interval.start && sampleTime < interval.end) {
+              intervalRecords.push({
+                beatsPerMinute: sample.beatsPerMinute,
+                time: sample.time
+              });
+            }
+          }
+        }
+      }
 
-      let value = 0;
+      let avgHeartRate = 0;
       
       if (intervalRecords.length > 0) {
-        if (dataType === 'HeartRateVariabilityRmssd') {
-          // HRV data in milliseconds
-          value = intervalRecords.reduce((sum, record) => sum + (record.heartRateVariabilityMillis || 0), 0) / intervalRecords.length;
-        } else if (dataType === 'HeartRate') {
-          // Heart rate data (fallback)
-          value = intervalRecords.reduce((sum, record) => sum + (record.beatsPerMinute || 0), 0) / intervalRecords.length;
-        }
+        avgHeartRate = intervalRecords.reduce((sum, sample) => sum + (sample.beatsPerMinute || 0), 0) / intervalRecords.length;
       }
       
       const intervalData = {
         id: interval.start.getTime().toString(),
         time: interval.label,
-        hrv: Math.round(value * 100) / 100, // Round to 2 decimal places
-        dataType: dataType,
+        heartRate: Math.round(avgHeartRate * 10) / 10, // Round to 1 decimal place
         recordCount: intervalRecords.length,
         start: interval.start,
         end: interval.end,
@@ -246,78 +247,67 @@ const HrvScreen = () => {
     return aggregatedData.reverse(); // Show most recent first
   };
 
-  // Fetch HRV data
-  const fetchHrvData = async () => {
+  // Fetch Heart Rate data
+  const fetchHeartRateData = async () => {
     if (!isInitialized) {
       return;
     }
 
-    console.log('🔄 Fetching HRV data from Health Connect...');
+    console.log('🔄 Fetching Heart Rate data from Health Connect...');
     setLoading(true);
     try {
       const { startTime, endTime } = getTodayTimeRange();
       console.log(`📅 Date range: ${startTime} to ${endTime}`);
       
-      // Try multiple HRV data types
-      const hrvDataTypes = [
-        'HeartRateVariabilityRmssd',
-        'HeartRate',  // Fallback to heart rate if HRV not available
-      ];
+      console.log('🔍 Fetching Heart Rate data...');
+      const heartRateRecords = await readRecords('HeartRate', {
+        timeRangeFilter: {
+          operator: 'between',
+          startTime,
+          endTime,
+        },
+      });
       
-      let allRecords = [];
-      let dataType = '';
+      console.log(`📊 Found ${heartRateRecords.records.length} Heart Rate records`);
       
-      for (const type of hrvDataTypes) {
-        try {
-          console.log(`🔍 Trying to fetch ${type} data...`);
-          const records = await readRecords(type, {
-            timeRangeFilter: {
-              operator: 'between',
-              startTime,
-              endTime,
-            },
-          });
-          
-          console.log(`📊 ${type}: Found ${records.records.length} records`);
-          
-          if (records.records.length > 0) {
-            console.log(`🔍 Sample ${type} record:`, JSON.stringify(records.records[0], null, 2));
-            allRecords = records.records;
-            dataType = type;
-            break;
-          }
-        } catch (error) {
-          console.log(`⚠️ Failed to fetch ${type}:`, error.message);
-        }
-      }
-      
-      if (allRecords.length === 0) {
-        console.log('⚠️ No HRV or Heart Rate data found!');
+      if (heartRateRecords.records.length > 0) {
+        console.log('🔍 Sample Heart Rate record:', JSON.stringify(heartRateRecords.records[0], null, 2));
+        
+        // Count total samples
+        const totalSamples = heartRateRecords.records.reduce((count, record) => 
+          count + (record.samples ? record.samples.length : 0), 0
+        );
+        console.log(`💓 Total heart rate samples found: ${totalSamples}`);
+        
+        // Show some sample BPM values
+        const sampleBPMs = heartRateRecords.records
+          .slice(0, 3)
+          .flatMap(record => record.samples || [])
+          .map(sample => sample.beatsPerMinute);
+        console.log('💓 Sample BPM values:', sampleBPMs);
+      } else {
+        console.log('⚠️ No Heart Rate data found!');
         console.log('💡 Tips:');
         console.log('- Make sure you have a fitness tracker/smartwatch');
         console.log('- Check if apps like Samsung Health, Google Fit are recording data');
-        console.log('- Try walking around to generate some health data');
-        
-        // Set empty data but don't error out
-        setHrvData([]);
-        return;
+        console.log('- Try some physical activity to generate heart rate data');
       }
 
       const intervals = generate5MinuteIntervals();
-      const aggregatedData = aggregateHrvByInterval(allRecords, intervals, dataType);
+      const aggregatedData = aggregateHeartRateByInterval(heartRateRecords.records, intervals);
       
-      setHrvData(aggregatedData);
-      console.log(`📈 Aggregated ${allRecords.length} records into ${aggregatedData.length} intervals`);
-      console.log('📉 Sample aggregated data:', aggregatedData.slice(0, 3));
+      setHeartRateData(aggregatedData);
+      console.log(`📈 Aggregated ${heartRateRecords.records.length} records into ${aggregatedData.length} intervals`);
+      console.log('📊 Sample aggregated data:', aggregatedData.slice(0, 3));
 
       // Send data to backend API
       if (aggregatedData.length > 0) {
-        console.log('📤 Sending HRV data to backend...');
-        await sendHrvDataToAPI(aggregatedData);
+        console.log('📤 Sending Heart Rate data to backend...');
+        await sendHeartRateDataToAPI(aggregatedData);
       }
     } catch (error) {
-      console.error('❌ Error fetching HRV data:', error);
-      Alert.alert('Error', `Failed to fetch HRV data: ${error.message}`);
+      console.error('❌ Error fetching Heart Rate data:', error);
+      Alert.alert('Error', `Failed to fetch Heart Rate data: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -339,7 +329,7 @@ const HrvScreen = () => {
       return;
     }
 
-    await fetchHrvData();
+    await fetchHeartRateData();
   };
 
   // Handle app state changes
@@ -353,8 +343,8 @@ const HrvScreen = () => {
       
       // If it's been more than 4 minutes, fetch immediately
       if (timeSinceLastFetch > 4 * 60 * 1000) {
-        console.log('🚀 Fetching HRV data immediately due to long background time');
-        fetchHrvData();
+        console.log('🚀 Fetching Heart Rate data immediately due to long background time');
+        fetchHeartRateData();
       }
     }
     
@@ -369,25 +359,25 @@ const HrvScreen = () => {
       BackgroundTimer.clearInterval(intervalRef.current);
     }
     
-    console.log('⏰ Setting up persistent 5-minute HRV auto-sync...');
+    console.log('⏰ Setting up persistent 5-minute Heart Rate auto-sync...');
     
     // Use BackgroundTimer for persistence across app states
     intervalRef.current = BackgroundTimer.setInterval(() => {
       const now = new Date();
-      console.log(`⏰ Background HRV sync triggered at ${now.toLocaleTimeString()}`);
+      console.log(`⏰ Background Heart Rate sync triggered at ${now.toLocaleTimeString()}`);
       lastFetchTime.current = Date.now();
       
       // Fetch data even when app is in background
-      fetchHrvData();
+      fetchHeartRateData();
     }, 5 * 60 * 1000); // 5 minutes
     
-    console.log('✅ Persistent HRV background sync enabled');
+    console.log('✅ Persistent Heart Rate background sync enabled');
   };
 
   // Refresh data
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchHrvData();
+    await fetchHeartRateData();
     setRefreshing(false);
   };
 
@@ -405,7 +395,7 @@ const HrvScreen = () => {
     return () => {
       subscription?.remove();
       if (intervalRef.current) {
-        console.log('🛑 Clearing HRV auto-sync intervals');
+        console.log('🛑 Clearing Heart Rate auto-sync intervals');
         clearInterval(intervalRef.current);
         BackgroundTimer.clearInterval(intervalRef.current);
       }
@@ -417,24 +407,24 @@ const HrvScreen = () => {
     if (isInitialized) {
       // Start with immediate fetch
       lastFetchTime.current = Date.now();
-      fetchHrvData();
+      fetchHeartRateData();
     }
   }, [isInitialized]);
 
-  const renderHrvItem = ({ item }) => (
-    <View style={styles.hrvItem}>
-      <View style={styles.hrvInfo}>
+  const renderHeartRateItem = ({ item }) => (
+    <View style={styles.heartRateItem}>
+      <View style={styles.heartRateInfo}>
         <Text style={styles.timeText}>{item.time}</Text>
         <Text style={styles.intervalText}>{item.interval}</Text>
         {item.recordCount > 0 && (
           <Text style={styles.recordCount}>
-            {item.recordCount} {item.dataType === 'HeartRate' ? 'HR' : 'HRV'} records
+            {item.recordCount} HR records
           </Text>
         )}
       </View>
       <View style={styles.valueContainer}>
-        <Text style={styles.hrvText}>
-          {item.hrv.toFixed(1)} {item.dataType === 'HeartRate' ? 'bpm' : 'ms'}
+        <Text style={styles.heartRateText}>
+          {item.heartRate > 0 ? `${item.heartRate.toFixed(0)} bpm` : '-- bpm'}
         </Text>
         {item.recordCount === 0 && (
           <Text style={styles.noDataText}>No data</Text>
@@ -447,7 +437,7 @@ const HrvScreen = () => {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#f8f9fa" />
       <View style={styles.header}>
-        <Text style={styles.title}>Today's Heart Rate Variability</Text>
+        <Text style={styles.title}>Today's Heart Rate</Text>
         <Text style={styles.subtitle}>
           {new Date().toLocaleDateString('en-US', {
             weekday: 'long',
@@ -473,13 +463,13 @@ const HrvScreen = () => {
 
       {loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#e91e63" />
-          <Text style={styles.loadingText}>Loading HRV data...</Text>
+          <ActivityIndicator size="large" color="#dc3545" />
+          <Text style={styles.loadingText}>Loading Heart Rate data...</Text>
         </View>
       ) : (
         <FlatList
-          data={hrvData}
-          renderItem={renderHrvItem}
+          data={heartRateData}
+          renderItem={renderHeartRateItem}
           keyExtractor={(item) => item.id}
           style={styles.list}
           refreshControl={
@@ -487,9 +477,9 @@ const HrvScreen = () => {
           }
           ListEmptyComponent={() => (
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No HRV data available for today</Text>
+              <Text style={styles.emptyText}>No Heart Rate data available for today</Text>
               <Text style={styles.emptySubtext}>
-                Make sure Health Connect is recording your heart rate variability
+                Make sure Health Connect is recording your heart rate data
               </Text>
             </View>
           )}
@@ -534,7 +524,7 @@ const styles = StyleSheet.create({
   },
   nextSyncText: {
     fontSize: 11,
-    color: '#e91e63',
+    color: '#dc3545',
     marginTop: 2,
   },
   apiStatus: {
@@ -547,7 +537,7 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
   },
-  hrvItem: {
+  heartRateItem: {
     backgroundColor: '#ffffff',
     padding: 16,
     marginBottom: 12,
@@ -561,9 +551,9 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
     borderLeftWidth: 4,
-    borderLeftColor: '#e91e63',
+    borderLeftColor: '#dc3545',
   },
-  hrvInfo: {
+  heartRateInfo: {
     flex: 1,
   },
   timeText: {
@@ -576,10 +566,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6c757d',
   },
-  hrvText: {
+  heartRateText: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#e91e63',
+    color: '#dc3545',
   },
   valueContainer: {
     alignItems: 'flex-end',
@@ -624,4 +614,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default HrvScreen;
+export default HeartRateScreen;
